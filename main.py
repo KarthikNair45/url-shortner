@@ -51,7 +51,7 @@ def return_url(short_url):
         date = url.created.replace(tzinfo=None)
         datediff = datetime.now() - date
         logger.info(f"Difference in Time is {datediff}")
-        if datediff<timedelta(minutes=1):
+        if datediff<timedelta(hours=1):
             return redirect(f"/{url.url}")
         else:
             delete_url(url.shortened_url)
