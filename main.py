@@ -1,11 +1,16 @@
-import random,string
+import random
 from flask import Flask,Response,redirect
 from flask_marshmallow import Marshmallow
 from schemas import UrlSchema
 from models import Url
+import logging
 from database import db
+from shorten_url import shorten_url
 app=Flask(__name__)
 ma = Marshmallow(app)
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger()
+logger.info("\t*APP STARTED*")
 urlSchema=UrlSchema()
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///project.db"
 db.init_app(app)
@@ -14,11 +19,6 @@ with app.app_context():
 @app.route("/health")
 def health():
     return Response("Perfect Health",status=201)
-def shorten_url(length_url):
-    try:
-        return ''.join(random.choices(string.ascii_letters + string.digits, k=length_url))
-    except Exception as e:
-        print(e)
 @app.route("/url/<string:url>",methods=["POST"])
 def push_url(url):
     '''To create a new shortened url'''
@@ -35,6 +35,7 @@ def push_url(url):
 def return_url(short_url):
     '''To get the full url'''
     try:
+        logger.info("Running Redirect")
         url = db.session.execute(db.select(Url).filter_by(shortened_url=short_url)).scalar_one()
         formatted_url=urlSchema.dumps(url)
         print(formatted_url)
