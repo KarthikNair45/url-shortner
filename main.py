@@ -7,16 +7,20 @@ from flask_marshmallow import Marshmallow
 from schemas import UrlSchema
 from models import Url
 from database import db
+from sqlalchemy.exc import IntegrityError
 
+import json
 import logging
-
+import os
 from shorten_url import shorten_url
+import redis
 
 app=Flask(__name__)
 ma = Marshmallow(app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
 logger.info("\t*APP STARTED*")
+redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'))
 urlSchema=UrlSchema()
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///project.db"
 db.init_app(app)
@@ -30,32 +34,44 @@ def health():
 @app.route("/url/<string:url>",methods=["POST"])
 def push_url(url):
     '''To create a new shortened url'''
+    logging.debug("Attempting to shorten URL")
+    shorter=shorten_url(random.randrange(3,len(url)))
+    logging.debug("URL shortened Sucessfully")
+    data={'url':url,'shortened_url':shorter}
+    user=Url(**data)
+    redis_client.setex(shorter, 360, json.dumps(data))
     try:
-        shorter=shorten_url(random.randrange(0,len(url)))
-        data={'url':url,'shortened_url':shorter}
-        user=Url(**data)
         db.session.add(user)
         db.session.commit()
         return(shorter)
+    except IntegrityError as e:
+        logger.error("Integrity Error the URL already exists in the DB")
+        return "The url already exists."
     except Exception as e:
         print(e)
-
+        return "Error while pushing data to Database"
 @app.route("/url/<string:short_url>",methods=["GET"])
 def return_url(short_url):
     '''To get the full url'''
     logger.info("Running Redirect")
     try:
-        url = db.session.execute(db.select(Url).filter_by(shortened_url=short_url)).scalar_one()
-        formatted_url=urlSchema.dumps(url)
-        print(formatted_url)
-        date = url.created.replace(tzinfo=None)
-        datediff = datetime.now() - date
-        logger.info(f"Difference in Time is {datediff}")
-        if datediff<timedelta(hours=1):
-            return redirect(f"/{url.url}")
+        url=redis_client.get(name=short_url).decode("utf-8")#to convert bytes to str
+        if not url:
+            url = db.session.execute(db.select(Url).filter_by(shortened_url=short_url)).scalar_one()
+            formatted_url=urlSchema.dumps(url)
+            print(formatted_url)
+            date = url.created.replace(tzinfo=None)#remove timezone info 
+            datediff = datetime.now() - date
+            logger.info(f"Difference in Time is {datediff}")
+            if datediff<timedelta(hours=1):
+                return redirect(f"/{url.url}")
+            else:
+                delete_url(url.shortened_url)
+                return 'Expired Create a short url again'
         else:
-            delete_url(url.shortened_url)
-            return 'Expired Create a short url again'
+            expanded_url=json.loads(url)
+            logger.info("Redirecting to New URL")
+            return redirect(f"/{expanded_url['url']}")
     except Exception as e:
         print(e)
         return 'No Url found'
