@@ -55,22 +55,29 @@ def return_url(short_url):
     '''To get the full url'''
     logger.info("Running Redirect")
     try:
-        url=redis_client.get(name=short_url).decode("utf-8")#to convert bytes to str
-        if not url:
+        url=redis_client.get(name=short_url)#to convert bytes to str
+        #if redis returns None then fetch from database and update redis otherwise use data inside redis memory
+        print(url)
+        if url==None:
             url = db.session.execute(db.select(Url).filter_by(shortened_url=short_url)).scalar_one()
             formatted_url=urlSchema.dumps(url)
-            print(formatted_url)
-            date = url.created.replace(tzinfo=None)#remove timezone info 
+            logger.info(f'{formatted_url}')
+            date = url.created.replace(tzinfo=None)#remove timezone info
             datediff = datetime.now() - date
             logger.info(f"Difference in Time is {datediff}")
             if datediff<timedelta(hours=1):
+                data={'url':url.url,'shortened_url':url.shortened_url}
+                logger.debug("Caching url for 6 minutes")
+                redis_client.setex(url.shortened_url, 360, json.dumps(data))
+                logger.info("Redirecting to New URL")
                 return redirect(f"/{url.url}")
             else:
                 delete_url(url.shortened_url)
                 return 'Expired Create a short url again'
         else:
-            expanded_url=json.loads(url)
-            logger.info("Redirecting to New URL")
+            expanded_url=json.loads(url.decode("utf-8"))
+            logger.debug('Using cached data')
+            logger.info('Redirecting to New URL')
             return redirect(f"/{expanded_url['url']}")
     except Exception as e:
         print(e)
@@ -81,8 +88,18 @@ def update_url(full_url):
     '''To update an already existing url.'''
     try:
         received_url=db.session.execute(db.select(Url).filter_by(url=full_url)).scalar_one()
-        shorter=shorten_url(random.randrange(0,len(full_url)))
-        received_url.shortened_url=shorter
+        print(urlSchema.dumps(received_url))
+        redis_key=received_url.shortened_url
+        cache_data=redis_client.get(name=redis_key)
+        shortened_url=shorten_url(random.randrange(0,len(full_url)))
+        data={'url':full_url,'shortened_url':shortened_url}
+        if cache_data==None:
+            redis_client.setex(name=shortened_url,time=360,value=json.dumps(data))
+        else:
+            print(received_url.shortened_url)
+            redis_client.delete(received_url.shortened_url)
+            redis_client.setex(name=shortened_url,time=360,value=json.dumps(data))
+        received_url.shortened_url=shortened_url
         db.session.commit()
         return urlSchema.dumps(received_url)
     except Exception as e:
@@ -94,10 +111,12 @@ def delete_url(url):
     try:
         deleted_url=db.session.execute(db.select(Url).filter_by(shortened_url=url)).scalar_one()
         db.session.delete(deleted_url)
+        redis_client.delete(url)
         db.session.commit()
         return urlSchema.dumps(deleted_url)
     except Exception as e:
-        print(e)
+        logger.error("Short url doesn't exist in the database")
+        return "Short url doesn't exist in the database"
 
 @app.route("/<string:redirected>")
 def redirect_url(redirected):
